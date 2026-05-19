@@ -1,0 +1,238 @@
+{
+  "name": "Shopee - Alert Stok Produk",
+  "nodes": [
+    {
+      "id": "schedule-4",
+      "name": "Setiap 1 Jam",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 1 }]
+        }
+      }
+    },
+    {
+      "id": "code-sign-list",
+      "name": "Generate Signature Item List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst partnerId = $env.SHOPEE_PARTNER_ID;\nconst partnerKey = $env.SHOPEE_PARTNER_KEY;\nconst shopId = $env.SHOPEE_SHOP_ID;\nconst accessToken = $env.SHOPEE_ACCESS_TOKEN;\nconst apiPath = '/api/v2/product/get_item_list';\nconst ts = Math.floor(Date.now() / 1000);\nconst base = partnerId + apiPath + ts + accessToken + shopId;\nconst sign = crypto.createHmac('sha256', partnerKey).update(base).digest('hex');\nreturn [{ json: { ts, sign, partnerId, shopId, accessToken, apiBase: $env.SHOPEE_API_BASE_URL } }];"
+      }
+    },
+    {
+      "id": "http-list-4",
+      "name": "Ambil Daftar Produk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.apiBase }}/api/v2/product/get_item_list",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "partner_id", "value": "={{ $json.partnerId }}" },
+            { "name": "shop_id", "value": "={{ $json.shopId }}" },
+            { "name": "access_token", "value": "={{ $json.accessToken }}" },
+            { "name": "timestamp", "value": "={{ $json.ts }}" },
+            { "name": "sign", "value": "={{ $json.sign }}" },
+            { "name": "offset", "value": "0" },
+            { "name": "page_size", "value": "50" },
+            { "name": "item_status", "value": "NORMAL" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "split-4",
+      "name": "Iterasi Per Produk",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [900, 300],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "code-sign-detail-4",
+      "name": "Generate Signature Detail",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst partnerId = $env.SHOPEE_PARTNER_ID;\nconst partnerKey = $env.SHOPEE_PARTNER_KEY;\nconst shopId = $env.SHOPEE_SHOP_ID;\nconst accessToken = $env.SHOPEE_ACCESS_TOKEN;\nconst apiPath = '/api/v2/product/get_item_detail';\nconst ts = Math.floor(Date.now() / 1000);\nconst base = partnerId + apiPath + ts + accessToken + shopId;\nconst sign = crypto.createHmac('sha256', partnerKey).update(base).digest('hex');\nconst itemId = $json.item_id;\nreturn [{ json: { ts, sign, itemId, partnerId, shopId, accessToken, apiBase: $env.SHOPEE_API_BASE_URL } }];"
+      }
+    },
+    {
+      "id": "http-detail-4",
+      "name": "Ambil Detail Produk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1340, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.apiBase }}/api/v2/product/get_item_detail",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "partner_id", "value": "={{ $json.partnerId }}" },
+            { "name": "shop_id", "value": "={{ $json.shopId }}" },
+            { "name": "access_token", "value": "={{ $json.accessToken }}" },
+            { "name": "timestamp", "value": "={{ $json.ts }}" },
+            { "name": "sign", "value": "={{ $json.sign }}" },
+            { "name": "item_id_list", "value": "={{ $json.itemId }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "code-check-stock",
+      "name": "Cek Stok Produk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300],
+      "parameters": {
+        "jsCode": "const threshold = parseInt($env.STOCK_ALERT_THRESHOLD || '10');\nconst item = $input.first().json.response?.item_list?.[0];\nif (!item) return [];\nconst models = item.models || [];\nconst lowStockModels = models.filter(m => {\n  const stock = m.stock_info_v2?.summary_info?.total_available_stock ??\n                m.stock_info?.current_stock ?? 0;\n  return stock <= threshold;\n}).map(m => ({\n  modelName: m.model_name || 'Default',\n  stock: m.stock_info_v2?.summary_info?.total_available_stock ?? m.stock_info?.current_stock ?? 0\n}));\nif (lowStockModels.length === 0) return [];\nreturn [{ json: { itemId: item.item_id, itemName: item.item_name, lowStockModels, threshold } }];"
+      }
+    },
+    {
+      "id": "if-stock",
+      "name": "Stok Hampir Habis?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1780, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.lowStockModels.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "code-format-4",
+      "name": "Format Pesan Alert Stok",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 180],
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });\nconst modelLines = d.lowStockModels.map(m => `  • ${m.modelName}: *${m.stock}* unit`).join('\\n');\nconst msg = `⚠️ *STOK HAMPIR HABIS!*\\n\\nProduk: *${d.itemName}*\\nBatas Alert: ${d.threshold} unit\\n\\nVarian Stok Rendah:\\n${modelLines}\\n\\n🕐 ${now}\\n\\nSegera restok produk Anda!`;\nreturn [{ json: { message: msg, ...d } }];"
+      }
+    },
+    {
+      "id": "telegram-4",
+      "name": "Notifikasi Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [2220, 80],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "credentials": {
+        "telegramApi": { "id": "telegram-cred-1", "name": "Shopee Telegram Bot" }
+      }
+    },
+    {
+      "id": "email-4",
+      "name": "Notifikasi Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2220, 280],
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM_EMAIL }}",
+        "toEmail": "={{ $env.SMTP_TO_EMAIL }}",
+        "subject": "=⚠️ Stok Hampir Habis — {{ $json.itemName }}",
+        "emailFormat": "text",
+        "message": "={{ $json.message }}"
+      },
+      "credentials": {
+        "smtp": { "id": "smtp-cred-1", "name": "Shopee SMTP" }
+      }
+    },
+    {
+      "id": "whatsapp-4",
+      "name": "Notifikasi WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2220, 480],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "={{ $env.WHATSAPP_API_TOKEN }}" }]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "target", "value": "={{ $env.WHATSAPP_TARGET_NUMBER }}" },
+            { "name": "message", "value": "={{ $json.message }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "noop-4",
+      "name": "Stok Masih Aman",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2000, 480],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Setiap 1 Jam": {
+      "main": [[{ "node": "Generate Signature Item List", "type": "main", "index": 0 }]]
+    },
+    "Generate Signature Item List": {
+      "main": [[{ "node": "Ambil Daftar Produk", "type": "main", "index": 0 }]]
+    },
+    "Ambil Daftar Produk": {
+      "main": [[{ "node": "Iterasi Per Produk", "type": "main", "index": 0 }]]
+    },
+    "Iterasi Per Produk": {
+      "main": [[{ "node": "Generate Signature Detail", "type": "main", "index": 0 }]]
+    },
+    "Generate Signature Detail": {
+      "main": [[{ "node": "Ambil Detail Produk", "type": "main", "index": 0 }]]
+    },
+    "Ambil Detail Produk": {
+      "main": [[{ "node": "Cek Stok Produk", "type": "main", "index": 0 }]]
+    },
+    "Cek Stok Produk": {
+      "main": [[{ "node": "Stok Hampir Habis?", "type": "main", "index": 0 }]]
+    },
+    "Stok Hampir Habis?": {
+      "main": [
+        [{ "node": "Format Pesan Alert Stok", "type": "main", "index": 0 }],
+        [{ "node": "Stok Masih Aman", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Pesan Alert Stok": {
+      "main": [
+        [
+          { "node": "Notifikasi Telegram", "type": "main", "index": 0 },
+          { "node": "Notifikasi Email", "type": "main", "index": 0 },
+          { "node": "Notifikasi WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "shopee" }, { "name": "stock" }, { "name": "alert" }]
+}

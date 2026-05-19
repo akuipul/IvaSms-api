@@ -1,0 +1,170 @@
+{
+  "name": "Shopee - Laporan Penjualan",
+  "nodes": [
+    {
+      "id": "schedule-daily",
+      "name": "Harian Jam 08:00 WIB",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 200],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 1 * * *" }]
+        }
+      }
+    },
+    {
+      "id": "schedule-weekly",
+      "name": "Mingguan Senin 08:00 WIB",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 400],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 1 * * 1" }]
+        }
+      }
+    },
+    {
+      "id": "code-sign-2",
+      "name": "Generate Shopee Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst partnerId = $env.SHOPEE_PARTNER_ID;\nconst partnerKey = $env.SHOPEE_PARTNER_KEY;\nconst shopId = $env.SHOPEE_SHOP_ID;\nconst accessToken = $env.SHOPEE_ACCESS_TOKEN;\nconst apiPath = '/api/v2/order/get_order_list';\nconst ts = Math.floor(Date.now() / 1000);\nconst base = partnerId + apiPath + ts + accessToken + shopId;\nconst sign = crypto.createHmac('sha256', partnerKey).update(base).digest('hex');\nconst fromTs = ts - 86400;\nreturn [{ json: { ts, sign, fromTs, partnerId, shopId, accessToken, apiBase: $env.SHOPEE_API_BASE_URL } }];"
+      }
+    },
+    {
+      "id": "http-orders-2",
+      "name": "Ambil Pesanan Selesai",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [700, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.apiBase }}/api/v2/order/get_order_list",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "partner_id", "value": "={{ $json.partnerId }}" },
+            { "name": "shop_id", "value": "={{ $json.shopId }}" },
+            { "name": "access_token", "value": "={{ $json.accessToken }}" },
+            { "name": "timestamp", "value": "={{ $json.ts }}" },
+            { "name": "sign", "value": "={{ $json.sign }}" },
+            { "name": "time_range_field", "value": "create_time" },
+            { "name": "time_from", "value": "={{ $json.fromTs }}" },
+            { "name": "time_to", "value": "={{ $json.ts }}" },
+            { "name": "page_size", "value": "100" },
+            { "name": "cursor", "value": "" },
+            { "name": "order_status", "value": "COMPLETED" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "code-aggregate",
+      "name": "Agregasi Data Penjualan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300],
+      "parameters": {
+        "jsCode": "const orders = $input.first().json.response?.order_list || [];\nconst totalOrders = orders.length;\nlet totalRevenue = 0;\norders.forEach(o => { totalRevenue += parseFloat(o.total_amount || 0); });\nconst avgOrder = totalOrders > 0 ? (totalRevenue / totalOrders).toFixed(0) : 0;\nconst now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });\nconst today = new Date().toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'long', year: 'numeric' });\nreturn [{ json: { reportDate: today, generatedAt: now, totalOrders, totalRevenue: totalRevenue.toFixed(0), avgOrderValue: avgOrder } }];"
+      }
+    },
+    {
+      "id": "code-format-2",
+      "name": "Format Laporan Penjualan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 300],
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst revenue = parseInt(d.totalRevenue).toLocaleString('id-ID');\nconst avg = parseInt(d.avgOrderValue).toLocaleString('id-ID');\nconst msg = `📊 *LAPORAN PENJUALAN SHOPEE*\\n📅 ${d.reportDate}\\n\\n📦 Total Pesanan Selesai: *${d.totalOrders}*\\n💰 Total Pendapatan: *Rp ${revenue}*\\n📈 Rata-rata per Pesanan: *Rp ${avg}*\\n\\n🕐 Dihasilkan: ${d.generatedAt}`;\nreturn [{ json: { message: msg, ...d } }];"
+      }
+    },
+    {
+      "id": "telegram-2",
+      "name": "Notifikasi Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1360, 100],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "credentials": {
+        "telegramApi": { "id": "telegram-cred-1", "name": "Shopee Telegram Bot" }
+      }
+    },
+    {
+      "id": "email-2",
+      "name": "Notifikasi Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1360, 300],
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM_EMAIL }}",
+        "toEmail": "={{ $env.SMTP_TO_EMAIL }}",
+        "subject": "=📊 Laporan Penjualan Shopee — {{ $json.reportDate }}",
+        "emailFormat": "text",
+        "message": "={{ $json.message }}"
+      },
+      "credentials": {
+        "smtp": { "id": "smtp-cred-1", "name": "Shopee SMTP" }
+      }
+    },
+    {
+      "id": "whatsapp-2",
+      "name": "Notifikasi WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1360, 500],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "={{ $env.WHATSAPP_API_TOKEN }}" }]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "target", "value": "={{ $env.WHATSAPP_TARGET_NUMBER }}" },
+            { "name": "message", "value": "={{ $json.message }}" }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Harian Jam 08:00 WIB": {
+      "main": [[{ "node": "Generate Shopee Signature", "type": "main", "index": 0 }]]
+    },
+    "Mingguan Senin 08:00 WIB": {
+      "main": [[{ "node": "Generate Shopee Signature", "type": "main", "index": 0 }]]
+    },
+    "Generate Shopee Signature": {
+      "main": [[{ "node": "Ambil Pesanan Selesai", "type": "main", "index": 0 }]]
+    },
+    "Ambil Pesanan Selesai": {
+      "main": [[{ "node": "Agregasi Data Penjualan", "type": "main", "index": 0 }]]
+    },
+    "Agregasi Data Penjualan": {
+      "main": [[{ "node": "Format Laporan Penjualan", "type": "main", "index": 0 }]]
+    },
+    "Format Laporan Penjualan": {
+      "main": [
+        [
+          { "node": "Notifikasi Telegram", "type": "main", "index": 0 },
+          { "node": "Notifikasi Email", "type": "main", "index": 0 },
+          { "node": "Notifikasi WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "shopee" }, { "name": "sales" }, { "name": "report" }]
+}

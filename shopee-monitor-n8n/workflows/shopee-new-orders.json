@@ -1,0 +1,176 @@
+{
+  "name": "Shopee - Monitor Pesanan Baru",
+  "nodes": [
+    {
+      "id": "schedule-1",
+      "name": "Setiap 5 Menit",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      }
+    },
+    {
+      "id": "code-sign-1",
+      "name": "Generate Shopee Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst partnerId = $env.SHOPEE_PARTNER_ID;\nconst partnerKey = $env.SHOPEE_PARTNER_KEY;\nconst shopId = $env.SHOPEE_SHOP_ID;\nconst accessToken = $env.SHOPEE_ACCESS_TOKEN;\nconst apiPath = '/api/v2/order/get_order_list';\nconst ts = Math.floor(Date.now() / 1000);\nconst base = partnerId + apiPath + ts + accessToken + shopId;\nconst sign = crypto.createHmac('sha256', partnerKey).update(base).digest('hex');\nconst fromTs = ts - 300;\nreturn [{ json: { ts, sign, fromTs, partnerId, shopId, accessToken, apiBase: $env.SHOPEE_API_BASE_URL } }];"
+      }
+    },
+    {
+      "id": "http-orders-1",
+      "name": "Ambil Daftar Pesanan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.apiBase }}/api/v2/order/get_order_list",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "partner_id", "value": "={{ $json.partnerId }}" },
+            { "name": "shop_id", "value": "={{ $json.shopId }}" },
+            { "name": "access_token", "value": "={{ $json.accessToken }}" },
+            { "name": "timestamp", "value": "={{ $json.ts }}" },
+            { "name": "sign", "value": "={{ $json.sign }}" },
+            { "name": "time_range_field", "value": "create_time" },
+            { "name": "time_from", "value": "={{ $json.fromTs }}" },
+            { "name": "time_to", "value": "={{ $json.ts }}" },
+            { "name": "page_size", "value": "50" },
+            { "name": "cursor", "value": "" },
+            { "name": "order_status", "value": "READY_TO_SHIP" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "if-orders-1",
+      "name": "Ada Pesanan Baru?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.response.order_list.length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "code-format-1",
+      "name": "Format Pesan Pesanan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 180],
+      "parameters": {
+        "jsCode": "const orders = $input.first().json.response.order_list;\nconst count = orders.length;\nconst orderNums = orders.map(o => o.order_sn).join('\\n  • ');\nconst now = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });\nconst msg = `🛒 *PESANAN BARU SHOPEE*\\n\\nWaktu: ${now}\\nJumlah Pesanan: *${count}*\\n\\nNo. Pesanan:\\n  • ${orderNums}\\n\\n⚡ Segera proses pesanan Anda!`;\nreturn [{ json: { message: msg, orderCount: count } }];"
+      }
+    },
+    {
+      "id": "telegram-1",
+      "name": "Notifikasi Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1340, 80],
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "credentials": {
+        "telegramApi": { "id": "telegram-cred-1", "name": "Shopee Telegram Bot" }
+      }
+    },
+    {
+      "id": "email-1",
+      "name": "Notifikasi Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1340, 280],
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM_EMAIL }}",
+        "toEmail": "={{ $env.SMTP_TO_EMAIL }}",
+        "subject": "=🛒 Pesanan Baru Shopee — {{ $json.orderCount }} Pesanan",
+        "emailFormat": "text",
+        "message": "={{ $json.message }}"
+      },
+      "credentials": {
+        "smtp": { "id": "smtp-cred-1", "name": "Shopee SMTP" }
+      }
+    },
+    {
+      "id": "whatsapp-1",
+      "name": "Notifikasi WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1340, 480],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "={{ $env.WHATSAPP_API_TOKEN }}" }]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "target", "value": "={{ $env.WHATSAPP_TARGET_NUMBER }}" },
+            { "name": "message", "value": "={{ $json.message }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "noop-1",
+      "name": "Tidak Ada Pesanan Baru",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1120, 480],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Setiap 5 Menit": {
+      "main": [[{ "node": "Generate Shopee Signature", "type": "main", "index": 0 }]]
+    },
+    "Generate Shopee Signature": {
+      "main": [[{ "node": "Ambil Daftar Pesanan", "type": "main", "index": 0 }]]
+    },
+    "Ambil Daftar Pesanan": {
+      "main": [[{ "node": "Ada Pesanan Baru?", "type": "main", "index": 0 }]]
+    },
+    "Ada Pesanan Baru?": {
+      "main": [
+        [{ "node": "Format Pesan Pesanan", "type": "main", "index": 0 }],
+        [{ "node": "Tidak Ada Pesanan Baru", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Pesan Pesanan": {
+      "main": [
+        [
+          { "node": "Notifikasi Telegram", "type": "main", "index": 0 },
+          { "node": "Notifikasi Email", "type": "main", "index": 0 },
+          { "node": "Notifikasi WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "shopee" }, { "name": "orders" }]
+}
